@@ -4,8 +4,7 @@
 
 ---
 
-**Model:** Qwen3.6 MoE 35B (Q4_K_M, codename APEX)
-**Hardware:** RTX A5000 16GB Laptop GPU, WSL2/Windows, 16 CPU threads (8 active)
+**Model:** Qwen3.6 MoE 35B
 **Framework:** llama.cpp (b9833-c818263f2), custom AMG patch
 **Date:** June 29, 2026
 
