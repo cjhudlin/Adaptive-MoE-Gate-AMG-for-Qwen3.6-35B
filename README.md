@@ -102,7 +102,8 @@ llama-quantize --override-kv qwen35moe.expert_used_count=int:12 \
 > "
 > ```
 
-Run perplexity (on the K12 model for example) (in WSL)
+Run perplexity (on the K12 model for example) (in WSL):
+
 AMG_THRESHOLD=0.90 ./build/bin/llama-perplexity \
     -m /path/to/model/qwen3-35b-a3b-k12.gguf \
     -f ptb.test.txt \
