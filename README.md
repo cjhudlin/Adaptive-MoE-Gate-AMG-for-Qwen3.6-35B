@@ -1,4 +1,4 @@
-# Adaptive MoE Gate (AMG) for Qwen3.6-35B in llama.cpp
+# Adaptive MoE Gate (AMG) for Qwen3.6-35B in llama.cpp — empirical benchmarking of an open research gap
 
 > **TL;DR:** We implemented a post-hoc adaptive expert gating mechanism directly inside llama.cpp for Qwen3.6-35B-A3B (APEX), benchmarked it across four configurations, and found that expanding the router to k=12 with a cumulative threshold gate at 0.90 achieves marginally better perplexity (11.2925) than the stock k=8 baseline (11.3277), while empirically identifying the key limitation — and the path to solving it. The patch script, raw results, and full methodology are included so anyone can reproduce or extend this work.
 
