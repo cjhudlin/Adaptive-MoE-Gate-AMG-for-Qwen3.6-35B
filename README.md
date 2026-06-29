@@ -12,7 +12,7 @@
 
 ## Introduction
 
-Mixture-of-Experts (MoE) language models like Qwen3.6-35B route each token through a fixed number of expert sub-networks. The number — typically 8 — is hardcoded at training time and used for every token regardless of how semantically simple or complex it is. A common word like "the" activates the same number of experts as a specialised technical term, even though the information requirements are entirely different.
+Mixture-of-Experts (MoE) language models like Qwen3.6-35B route each token through a fixed number of expert sub-networks. The number, in this case 8, is hardcoded at training time and used for every token regardless of how semantically simple or complex it is. A common word like "the" activates the same number of experts as a specialised technical term, even though the information requirements are entirely different.
 
 The Adaptive MoE Gate (AMG) is an inference-time modification to llama.cpp that introduces cumulative probability thresholding on expert routing weights. Rather than always using exactly k experts, AMG uses as many experts as needed to reach a confidence threshold — zeroing the weakest contributors and renormalising the survivors. The static computation graph constraint in GGML means all k expert FFNs still execute; AMG adjusts which outputs count, not which computations run.
 
