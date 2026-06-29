@@ -4,6 +4,13 @@
 
 ---
 
+**Model:** Qwen3.6 MoE 35B (Q4_K_M, codename APEX)
+**Hardware:** RTX A5000 16GB Laptop GPU, WSL2/Windows, 16 CPU threads (8 active)
+**Framework:** llama.cpp (b9833-c818263f2), custom AMG patch
+**Date:** June 29, 2026
+
+---
+
 ## Introduction
 
 Mixture-of-Experts (MoE) language models like Qwen3.6-35B route each token through a fixed number of expert sub-networks. The number — typically 8 — is hardcoded at training time and used for every token regardless of how semantically simple or complex it is. A common word like "the" activates the same number of experts as a specialised technical term, even though the information requirements are entirely different.
@@ -12,12 +19,29 @@ The Adaptive MoE Gate (AMG) is an inference-time modification to llama.cpp that 
 
 This report documents the implementation, benchmarking methodology, perplexity results across four configurations on Qwen3.6-35B-A3B, and the empirical finding that explains both why the current results are limited and what is needed to unlock genuine per-token adaptivity.
 
----
+### What is not new
 
-**Model:** Qwen3.6 MoE 35B (Q4_K_M, codename APEX)
-**Hardware:** RTX A5000 16GB Laptop GPU, WSL2/Windows, 16 CPU threads (8 active)
-**Framework:** llama.cpp (b9833-c818263f2), custom AMG patch
-**Date:** June 29, 2026
+The concept of threshold-based cumulative routing exists in published literature: XMoE (2024), DynMoE (ICLR 2025), and TopP routing (Huang et al. 2024) all implement the same core idea. All of these train models from scratch with the adaptive mechanism built in.
+
+### What is genuinely new
+
+No published work describes a working `ggml_map_custom1` callback for adaptive gating in a production inference engine. The workaround for the static GGML graph constraint — zero-gating rather than truly dynamic k — is a practically useful engineering contribution. The empirical benchmarking of post-hoc AMG on a production-scale pretrained model (Qwen3.6-35B) is the first such result we are aware of, and it quantifies precisely why the approach is limited without router fine-tuning.
+
+### Why this matters — what genuinely adaptive models would deliver
+
+The ideal implementation selects a dynamic number of experts per token using two parameters working together: a **threshold** (stop adding experts once confidence is sufficient) and a **cap** (hard ceiling to prevent compute overflow). Simple tokens use only as many experts as needed — potentially 2-4. Complex tokens use up to the cap. Compute becomes proportional to content difficulty.
+
+Once a model is trained with an adaptive router, this delivers four concrete benefits:
+
+**1. Compute proportional to difficulty.** A page of simple prose might average 3 active experts per token. A dense technical argument might average 7. The average compute across a real conversation could drop substantially compared to always-k=8, at no quality cost for simple content — saving energy and allowing faster responses on constrained hardware.
+
+**2. Quality ceiling rises for hard tokens.** With a configurable cap (e.g. 12) and an adaptive router, genuinely difficult tokens can draw on more expert knowledge than the original k=8 model ever could. The cap prevents compute from blowing out — complex tokens get up to 12 experts while simple ones get 2-3. The average stays manageable.
+
+**3. Implicit content-aware routing.** An entropy-regularized router learns which tokens are simple vs complex from the training signal itself. The LM loss gradient is weak on predictable tokens and strong on unpredictable ones. The router learns to reflect this — concentrating for predictable tokens, spreading for unpredictable ones. That is genuine semantic adaptivity, not a threshold imposed on a flat distribution.
+
+**4. Graceful degradation under memory pressure.** With adaptive routing and a tunable cap, max_k can be adjusted at runtime to match available VRAM. Lower cap → fewer active experts → still works, just slightly less capable on hard tokens. Fixed k=8 gives no such knob.
+
+> *"The ideal adaptive MoE implementation selects a dynamic number of experts per token — using only as many as needed to reach a confidence threshold, up to a defined maximum cap. This gives simple tokens cheap routing (2-4 experts) and complex tokens full coverage (up to cap), proportioning compute to content difficulty. AMG implements this mechanism at inference time; router fine-tuning is required to make the underlying distributions peaked enough for the threshold to have meaningful bite."*
 
 ---
 
@@ -69,7 +93,15 @@ llama-quantize --override-kv qwen35moe.expert_used_count=int:12 \
     original.gguf k12-fixed.gguf copy
 ```
 
-> **Critical note:** The correct GGUF metadata key is `qwen35moe.expert_used_count`, not `qwen3moe.expert_used_count`. Using the wrong key silently fails — the override is written but ignored at load time. Verify with: `python3 -c "from gguf import GGUFReader; r = GGUFReader('model.gguf'); [print(k, r.fields[k].parts[-1].tolist()) for k in r.fields if 'expert' in k.lower()]"`
+> **Critical note:** The correct GGUF metadata key is `qwen35moe.expert_used_count`, not `qwen3moe.expert_used_count`. Using the wrong key silently fails — the override is written but ignored at load time. Verify with:
+> ```bash
+> python3 -c "
+> import sys; sys.path.insert(0, 'gguf-py')
+> from gguf import GGUFReader
+> r = GGUFReader('model.gguf')
+> [print(k, r.fields[k].parts[-1].tolist()) for k in r.fields if 'expert' in k.lower()]
+> "
+> ```
 
 ---
 
@@ -170,7 +202,7 @@ The AMG log shows `10.31 / 12` consistently across all 192 chunks, with almost n
 
 **Finding 1:** Post-hoc AMG on a fixed-k trained model cannot produce meaningful per-token expert variability without quality degradation. The router produces flat distributions by design.
 
-**Finding 2:** The correct GGUF metadata key for this model is `qwen35moe.expert_used_count`, not `qwen3moe.expert_used_count`. Using the wrong key silently fails.
+**Finding 2:** The correct GGUF metadata key for this model is `qwen35moe.expert_used_count`, not `qwen3moe.expert_used_count`. Using the wrong key silently fails — the override is written to the file but ignored at load time.
 
 **Finding 3:** k12 with AMG at threshold 0.90 achieves the best PPL of all configurations tested (11.2925), marginally below the k8 baseline. While not statistically conclusive at one standard error, it is the most practically useful configuration available without retraining.
 
@@ -208,7 +240,9 @@ To achieve genuine per-token variability, the router layers (`mlp.gate.weight`, 
 L = L_LM + λ_entropy × H(router) + λ_balance × KL(usage, uniform)
 ```
 
-A router fine-tuning pipeline (`router_train.py`) was developed targeting only these 21M parameters with all other model weights frozen. Hardware requirement: ~20GB VRAM (A100 40GB recommended). The pipeline is included in this repository. Success criterion: AMG-k12-0.90 PPL ≤ 11.33 with genuine per-token variance in active expert count (σ > 1.5).
+A router fine-tuning pipeline (`router_train.py`) was developed targeting only these 21M parameters with all other model weights frozen. Hardware requirement: ~20GB VRAM (A100 40GB recommended). The pipeline is included in this repository.
+
+Success criterion: AMG-k12-0.90 PPL ≤ 11.33 (within baseline error) with genuine per-token variance in active expert count (σ > 1.5 across tokens), rather than the current near-constant 10.31.
 
 ---
 
